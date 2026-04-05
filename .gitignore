@@ -1,0 +1,30 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+.venv4/
+venv/
+
+# Jupyter / local env
+.ipynb_checkpoints/
+.env
+
+# ML outputs
+runs/
+
+# Local example assets
+examples/sample.jpg
+
+# Gradio / local uploads
+gradio_cached_examples/
+
+# Editor files
+.idea/
+.vscode/
