@@ -20,6 +20,8 @@ venv/
 runs/
 yolo*.pt
 *.pt
+!models/
+!models/*.pt
 
 # Local datasets
 data/
