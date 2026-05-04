@@ -18,6 +18,11 @@ venv/
 
 # ML outputs
 runs/
+yolo*.pt
+*.pt
+
+# Local datasets
+data/
 
 # Local example assets
 examples/sample.jpg
