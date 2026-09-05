@@ -5,8 +5,10 @@ Interface web locale pour piloter un workflow YOLO autour de la detection de met
 ## Fonctionnalites V1
 
 - inspection d'un dataset YOLO
+- construction d'un dataset equilibre depuis les annotations positives et les faux positifs
 - generation d'un `dataset.yaml`
 - lancement d'un entrainement YOLO
+- suivi optionnel des logs et arret propre d'un entrainement en cours
 - prediction sur une image avec un modele
 - consultation des modeles et des runs produits
 
@@ -31,6 +33,8 @@ Variables utiles :
 - `METEOR_ML_STUDIO_DEMO_IMAGE` : image chargee par defaut dans l'onglet `Predict`
 - `METEOR_ML_STUDIO_DATASET_DIR` : dossier dataset affiche par defaut
 - `METEOR_ML_STUDIO_RUNS_DIR` : dossier des runs YOLO affiche par defaut
+- `METEOR_ML_STUDIO_ANNOTATIONS_MANIFEST` : manifeste des annotations positives
+- `METEOR_ML_STUDIO_NEGATIVES_DIR` : dossier contenant les faux positifs
 
 Si `.env` n'est pas present, l'application utilise des valeurs par defaut locales.
 
@@ -61,6 +65,14 @@ dataset/
 │   └── val/
 └── dataset.yaml
 ```
+
+Le bouton `Construire le dataset` cree cette structure depuis le manifeste des
+annotations positives et le dossier des faux positifs. La valeur conseillee pour
+ce projet est de 600 faux positifs et 20 % d'images de validation.
+
+La construction est faite dans un dossier temporaire. L'ancien dataset est
+deplace dans un dossier `dataset-backup-<date>` uniquement lorsque le nouveau
+dataset est complet.
 
 ## Notes
 
