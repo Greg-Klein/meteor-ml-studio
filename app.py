@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -90,6 +91,9 @@ class TrainingProcessManager:
 
 TRAINING_MANAGER = TrainingProcessManager()
 MAX_TRAIN_LOG_LINES = 1_000
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+EPOCH_PROGRESS_RE = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)(?!\d)")
+BATCH_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3})%(?!\d)")
 
 STUDIO_THEME = gr.themes.Base(
     primary_hue="orange",
@@ -340,6 +344,64 @@ button[role="tab"][aria-selected="true"] {
     font-size: 0.78rem !important;
 }
 
+.training-progress-shell {
+    display: grid;
+    gap: 9px;
+    min-height: 86px;
+    margin: 0 0 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--studio-border);
+    border-radius: 7px;
+    background: var(--studio-surface);
+}
+
+.training-progress-copy {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    color: var(--studio-muted);
+    font-size: 0.76rem;
+    font-weight: 650;
+}
+
+.training-progress-copy strong {
+    color: var(--studio-text);
+    font-family: "SFMono-Regular", Menlo, monospace;
+    font-size: 0.92rem;
+}
+
+.training-progress-track {
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #292e34;
+}
+
+.training-progress-value {
+    display: block;
+    width: var(--training-progress);
+    height: 100%;
+    border-radius: inherit;
+    background: var(--studio-accent);
+    transform-origin: left center;
+    transition: width 320ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.training-progress-detail {
+    color: var(--studio-muted);
+    font-family: "SFMono-Regular", Menlo, monospace;
+    font-size: 0.7rem;
+}
+
+.training-progress-shell[data-state="completed"] .training-progress-value {
+    background: #7f9f79;
+}
+
+.training-progress-shell[data-state="stopped"] .training-progress-value,
+.training-progress-shell[data-state="error"] .training-progress-value {
+    background: var(--studio-danger);
+}
+
 #training-autoscroll {
     padding: 0 !important;
     border: 0 !important;
@@ -468,17 +530,7 @@ TRAINING_AUTOSCROLL_JS = """
 
     if (!window.__meteorTrainingLogWatcher) {
         window.__meteorTrainingLogWatcher = true;
-        let stablePageY = window.scrollY;
         let previousValue = "";
-
-        const rememberUserPosition = () => {
-            window.requestAnimationFrame(() => {
-                stablePageY = window.scrollY;
-            });
-        };
-        window.addEventListener("wheel", rememberUserPosition, { passive: true });
-        window.addEventListener("touchmove", rememberUserPosition, { passive: true });
-        window.addEventListener("keyup", rememberUserPosition);
 
         window.setInterval(() => {
             const log = document.querySelector("#training-logs textarea");
@@ -487,20 +539,18 @@ TRAINING_AUTOSCROLL_JS = """
             }
 
             previousValue = log.value;
-            const pageY = stablePageY;
-            const synchronize = () => {
+            if (window.__meteorFollowTrainingLog) {
                 const currentLog = document.querySelector("#training-logs textarea");
-                if (window.__meteorFollowTrainingLog && currentLog) {
+                if (currentLog) {
                     currentLog.scrollTop = currentLog.scrollHeight;
                 }
-                if (Math.abs(window.scrollY - pageY) > 1) {
-                    window.scrollTo(0, pageY);
-                }
-            };
-
-            synchronize();
-            window.requestAnimationFrame(synchronize);
-            window.setTimeout(synchronize, 80);
+                window.requestAnimationFrame(() => {
+                    const renderedLog = document.querySelector("#training-logs textarea");
+                    if (renderedLog) {
+                        renderedLog.scrollTop = renderedLog.scrollHeight;
+                    }
+                });
+            }
         }, 50);
     }
 
@@ -576,6 +626,71 @@ def _whole_number(value: float | int) -> str:
     return str(int(number))
 
 
+def _extract_epoch_progress(line: str, expected_total: int) -> int | None:
+    clean_line = ANSI_ESCAPE_RE.sub("", line)
+    for current, total in EPOCH_PROGRESS_RE.findall(clean_line):
+        current_epoch = int(current)
+        if int(total) == expected_total and 0 < current_epoch <= expected_total:
+            return current_epoch
+    return None
+
+
+def _extract_training_progress(line: str, expected_total: int) -> tuple[int, float] | None:
+    clean_line = ANSI_ESCAPE_RE.sub("", line)
+    current_epoch = _extract_epoch_progress(clean_line, expected_total)
+    if current_epoch is None:
+        return None
+
+    percentages = [int(value) for value in BATCH_PERCENT_RE.findall(clean_line)]
+    batch_percentage = percentages[-1] if percentages else 0
+    overall = ((current_epoch - 1) + min(batch_percentage, 100) / 100) / expected_total * 100
+    return current_epoch, round(min(overall, 100), 1)
+
+
+def _render_training_progress(
+    current: int,
+    total: int,
+    state: str = "idle",
+    percentage: float | None = None,
+) -> str:
+    safe_total = max(1, total)
+    safe_current = min(max(0, current), safe_total)
+    progress_value = (
+        round((safe_current / safe_total) * 100, 1)
+        if percentage is None
+        else min(max(0, percentage), 100)
+    )
+    percentage_label = f"{progress_value:g}"
+    safe_state = state if state in {"idle", "running", "completed", "stopped", "error"} else "idle"
+
+    if safe_state == "completed":
+        detail = f"Termine - {safe_total} epoques traitees"
+    elif safe_state == "stopped":
+        detail = f"Arrete a l'epoque {safe_current} sur {safe_total}"
+    elif safe_state == "error":
+        detail = f"Interrompu a l'epoque {safe_current} sur {safe_total}"
+    elif safe_current:
+        detail = f"Epoque {safe_current} sur {safe_total}"
+    else:
+        detail = "Initialisation de YOLO" if safe_state == "running" else "En attente"
+
+    return f"""
+    <div class="training-progress-shell" data-state="{safe_state}">
+        <div class="training-progress-copy">
+            <span>Progression de l'entrainement</span>
+            <strong>{percentage_label} %</strong>
+        </div>
+        <div class="training-progress-track" aria-hidden="true">
+            <span
+                class="training-progress-value"
+                style="--training-progress: {progress_value}%"
+            ></span>
+        </div>
+        <div class="training-progress-detail">{detail}</div>
+    </div>
+    """
+
+
 def run_training_stream(
     dataset_yaml: str,
     model_path: str,
@@ -585,6 +700,7 @@ def run_training_stream(
     runs_root: str,
     run_name: str,
 ):
+    total_epochs = int(_whole_number(epochs))
     command = [
         sys.executable,
         str(SCRIPTS_DIR / "train.py"),
@@ -593,7 +709,7 @@ def run_training_stream(
         "--model",
         str(model_path),
         "--epochs",
-        _whole_number(epochs),
+        str(total_epochs),
         "--imgsz",
         _whole_number(image_size),
         "--batch",
@@ -611,6 +727,7 @@ def run_training_stream(
             gr.update(visible=True),
             gr.update(visible=False),
             str(error),
+            _render_training_progress(0, total_epochs, "error"),
         )
         return
 
@@ -620,10 +737,13 @@ def run_training_stream(
         gr.update(visible=False),
         gr.update(visible=True, interactive=True, value="Arreter l'entrainement"),
         "Demarrage de l'entrainement...",
+        _render_training_progress(0, total_epochs, "running"),
     )
 
     lines: list[str] = []
     logs_truncated = False
+    current_epoch = 0
+    current_percentage = 0.0
     try:
         assert process.stdout is not None
         for line in process.stdout:
@@ -632,17 +752,34 @@ def run_training_stream(
                 lines = lines[-MAX_TRAIN_LOG_LINES:]
                 logs_truncated = True
             prefix = "[Les lignes les plus anciennes ont ete masquees.]\n" if logs_truncated else ""
+            detected_progress = _extract_training_progress(line, total_epochs)
+            progress_update = gr.skip()
+            if detected_progress is not None:
+                detected_epoch, detected_percentage = detected_progress
+            else:
+                detected_epoch, detected_percentage = current_epoch, current_percentage
+            if detected_percentage != current_percentage:
+                current_epoch = detected_epoch
+                current_percentage = detected_percentage
+                progress_update = _render_training_progress(
+                    current_epoch,
+                    total_epochs,
+                    "running",
+                    current_percentage,
+                )
             yield (
                 prefix + "".join(lines),
                 gr.skip(),
                 gr.skip(),
                 gr.skip(),
+                progress_update,
             )
 
         return_code = process.wait()
         if TRAINING_MANAGER.stop_requested(process):
             lines.append("\n[Entrainement arrete proprement.]\n")
             final_status = "Entrainement arrete proprement."
+            progress_state = "stopped"
         else:
             lines.append(f"\n[exit code: {return_code}]\n")
             final_status = (
@@ -650,11 +787,22 @@ def run_training_stream(
                 if return_code == 0
                 else f"L'entrainement s'est termine avec le code {return_code}."
             )
+            if return_code == 0:
+                current_epoch = total_epochs
+                progress_state = "completed"
+            else:
+                progress_state = "error"
         yield (
             "".join(lines[-MAX_TRAIN_LOG_LINES:]),
             gr.update(visible=True),
             gr.update(visible=False),
             final_status,
+            _render_training_progress(
+                current_epoch,
+                total_epochs,
+                progress_state,
+                100 if progress_state == "completed" else current_percentage,
+            ),
         )
     except Exception as error:
         lines.append(f"\n[Erreur: {error}]\n")
@@ -663,6 +811,12 @@ def run_training_stream(
             gr.update(visible=True),
             gr.update(visible=False),
             f"Erreur pendant l'entrainement: {error}",
+            _render_training_progress(
+                current_epoch,
+                total_epochs,
+                "error",
+                current_percentage,
+            ),
         )
     finally:
         if process.poll() is None:
@@ -1041,6 +1195,11 @@ def build_ui() -> gr.Blocks:
                 visible=False,
                 elem_classes=["action-toggle", "danger-action"],
             )
+            train_progress = gr.HTML(
+                value=_render_training_progress(0, 50),
+                elem_id="training-progress",
+                container=False,
+            )
             train_status = gr.Textbox(
                 label="Etat",
                 value="Aucun entrainement lance depuis cette session.",
@@ -1073,6 +1232,7 @@ def build_ui() -> gr.Blocks:
                     train_button,
                     stop_train_button,
                     train_status,
+                    train_progress,
                 ],
                 scroll_to_output=False,
                 show_progress="hidden",
