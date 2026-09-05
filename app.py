@@ -340,6 +340,62 @@ button[role="tab"][aria-selected="true"] {
     font-size: 0.78rem !important;
 }
 
+#training-autoscroll {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+}
+
+#training-autoscroll label {
+    min-height: 44px;
+    padding: 12px 14px;
+    border: 1px solid #343a41;
+    border-radius: 6px;
+    background: #14171a;
+    cursor: pointer;
+}
+
+#training-autoscroll input[type="checkbox"] {
+    position: relative;
+    width: 42px !important;
+    height: 23px !important;
+    border: 1px solid #50565d !important;
+    border-radius: 999px !important;
+    appearance: none !important;
+    background: #252a30 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    cursor: pointer;
+    transition: border-color 180ms ease, background-color 180ms ease !important;
+}
+
+#training-autoscroll input[type="checkbox"]::after {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #b8babd;
+    content: "";
+    transition: transform 180ms cubic-bezier(.2, .8, .2, 1), background-color 180ms ease;
+}
+
+#training-autoscroll input[type="checkbox"]:checked {
+    border-color: var(--studio-accent) !important;
+    background: rgba(201, 106, 61, 0.24) !important;
+}
+
+#training-autoscroll input[type="checkbox"]:checked::after {
+    background: var(--studio-accent-hover);
+    transform: translateX(19px);
+}
+
+#training-autoscroll input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--studio-accent) !important;
+    outline-offset: 3px;
+}
+
 .terminal-output textarea {
     min-height: 420px !important;
     padding: 18px !important;
@@ -406,6 +462,55 @@ button[role="tab"][aria-selected="true"] {
 }
 """
 
+TRAINING_AUTOSCROLL_JS = """
+(enabled) => {
+    window.__meteorFollowTrainingLog = enabled;
+
+    if (!window.__meteorTrainingLogWatcher) {
+        window.__meteorTrainingLogWatcher = true;
+        let stablePageY = window.scrollY;
+        let previousValue = "";
+
+        const rememberUserPosition = () => {
+            window.requestAnimationFrame(() => {
+                stablePageY = window.scrollY;
+            });
+        };
+        window.addEventListener("wheel", rememberUserPosition, { passive: true });
+        window.addEventListener("touchmove", rememberUserPosition, { passive: true });
+        window.addEventListener("keyup", rememberUserPosition);
+
+        window.setInterval(() => {
+            const log = document.querySelector("#training-logs textarea");
+            if (!log || log.value === previousValue) {
+                return;
+            }
+
+            previousValue = log.value;
+            const pageY = stablePageY;
+            const synchronize = () => {
+                const currentLog = document.querySelector("#training-logs textarea");
+                if (window.__meteorFollowTrainingLog && currentLog) {
+                    currentLog.scrollTop = currentLog.scrollHeight;
+                }
+                if (Math.abs(window.scrollY - pageY) > 1) {
+                    window.scrollTo(0, pageY);
+                }
+            };
+
+            synchronize();
+            window.requestAnimationFrame(synchronize);
+            window.setTimeout(synchronize, 80);
+        }, 50);
+    }
+
+    const log = document.querySelector("#training-logs textarea");
+    if (enabled && log) {
+        log.scrollTop = log.scrollHeight;
+    }
+    return [];
+}
+"""
 
 def resolve_annotations_manifest() -> Path:
     annotations_root = PROJECT_ROOT / "data" / "annotations"
@@ -569,10 +674,6 @@ def run_training_stream(
 def stop_training():
     message = TRAINING_MANAGER.request_stop()
     return message, gr.update(interactive=False, value="Arret en cours...")
-
-
-def configure_log_autoscroll(enabled: bool):
-    return gr.update(autoscroll=enabled)
 
 
 def list_models(runs_root: str) -> str:
@@ -927,6 +1028,7 @@ def build_ui() -> gr.Blocks:
                 train_autoscroll = gr.Checkbox(
                     label="Faire defiler automatiquement les logs",
                     value=False,
+                    elem_id="training-autoscroll",
                 )
             train_button = gr.Button(
                 "Lancer l'entrainement",
@@ -983,14 +1085,14 @@ def build_ui() -> gr.Blocks:
                 show_progress="hidden",
             )
             train_autoscroll.change(
-                fn=configure_log_autoscroll,
+                fn=None,
                 inputs=train_autoscroll,
-                outputs=train_logs,
+                outputs=[],
+                js=TRAINING_AUTOSCROLL_JS,
                 queue=False,
                 scroll_to_output=False,
                 show_progress="hidden",
             )
-
         with gr.Tab("Runs"):
             gr.Markdown(
                 "Compare les derniers runs et retrouve rapidement le modele a tester.",
