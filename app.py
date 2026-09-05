@@ -871,6 +871,45 @@ def _read_results_csv(run_dir: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def resolve_best_model(runs_root: str) -> str | None:
+    root = Path(runs_root).expanduser()
+    if not root.exists():
+        return None
+
+    scored_models: list[tuple[float, float, Path]] = []
+    models = list(root.rglob("best.pt"))
+    for model in models:
+        rows = _read_results_csv(model.parent.parent)
+        scores = [
+            score
+            for row in rows
+            if (score := _safe_float(row.get("metrics/mAP50(B)"))) is not None
+        ]
+        if scores:
+            scored_models.append((max(scores), model.stat().st_mtime, model))
+
+    if scored_models:
+        return str(max(scored_models, key=lambda item: (item[0], item[1]))[2])
+    if models:
+        return str(max(models, key=lambda path: path.stat().st_mtime))
+    return None
+
+
+def resolve_prediction_model(model_path: str) -> str:
+    requested_model = model_path.strip()
+    if requested_model.lower() != "auto":
+        return requested_model
+
+    runs_root = os.environ.get(
+        "METEOR_ML_STUDIO_RUNS_DIR",
+        str(PROJECT_ROOT / "runs"),
+    )
+    best_model = resolve_best_model(runs_root)
+    if best_model is None:
+        raise FileNotFoundError(f"Aucun modele best.pt trouve dans: {runs_root}")
+    return best_model
+
+
 def _build_latest_run_figure(run_dir: Path):
     import matplotlib.pyplot as plt
 
@@ -983,7 +1022,12 @@ def inspect_runs(runs_root: str):
     )
 
 
-def run_prediction_visual(model_path: str, image_path: str, conf: float):
+def run_prediction_visual(
+    model_path: str,
+    image_path: str,
+    conf: float,
+    image_size: float | int,
+):
     import pandas as pd
 
     from scripts.predict import predict_image
@@ -991,7 +1035,13 @@ def run_prediction_visual(model_path: str, image_path: str, conf: float):
     if not image_path:
         return "Aucune image fournie.", None, pd.DataFrame()
 
-    prediction = predict_image(model_path, Path(image_path).expanduser(), conf)
+    resolved_model_path = resolve_prediction_model(model_path)
+    prediction = predict_image(
+        resolved_model_path,
+        Path(image_path).expanduser(),
+        conf,
+        int(_whole_number(image_size)),
+    )
     detections = pd.DataFrame(prediction["detections"])
     return prediction["logs"], prediction["annotated_image"], detections
 
@@ -1300,13 +1350,19 @@ def build_ui() -> gr.Blocks:
             with gr.Group(elem_classes=["studio-panel"]):
                 with gr.Row():
                     predict_model = gr.Textbox(
-                        label="Modele",
-                        value="yolo11n.pt",
+                        label="Modele (auto = meilleur run)",
+                        value="auto",
                         scale=3,
                     )
                     predict_conf = gr.Number(
                         label="Seuil de confiance",
-                        value=0.25,
+                        value=0.10,
+                        scale=1,
+                    )
+                    predict_imgsz = gr.Number(
+                        label="Resolution d'analyse",
+                        value=1280,
+                        precision=0,
                         scale=1,
                     )
                 predict_image_input = gr.Image(
@@ -1326,8 +1382,14 @@ def build_ui() -> gr.Blocks:
 
             predict_button.click(
                 fn=run_prediction_visual,
-                inputs=[predict_model, predict_image_input, predict_conf],
+                inputs=[
+                    predict_model,
+                    predict_image_input,
+                    predict_conf,
+                    predict_imgsz,
+                ],
                 outputs=[predict_logs, predict_result_image, predict_table],
+                scroll_to_output=False,
             )
 
     return demo

@@ -6,7 +6,12 @@ from pathlib import Path
 from ultralytics import YOLO
 
 
-def predict_image(model_path: str, image_path: Path, conf: float = 0.25) -> dict:
+def predict_image(
+    model_path: str,
+    image_path: Path,
+    conf: float = 0.25,
+    image_size: int = 640,
+) -> dict:
     if not image_path.exists():
         raise FileNotFoundError(f"Image introuvable: {image_path}")
 
@@ -15,11 +20,12 @@ def predict_image(model_path: str, image_path: Path, conf: float = 0.25) -> dict
     model = YOLO(model_path)
 
     logs.append(f"Prediction sur: {image_path}")
+    logs.append(f"Resolution d'analyse: {image_size}")
     results = model.predict(
         source=str(image_path),
         conf=conf,
         save=True,
-        imgsz=640,
+        imgsz=image_size,
     )
 
     result = results[0]
@@ -67,9 +73,10 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--imgsz", type=int, default=640)
     args = parser.parse_args()
 
-    prediction = predict_image(args.model, args.image, args.conf)
+    prediction = predict_image(args.model, args.image, args.conf, args.imgsz)
     print(prediction["logs"])
     if prediction["annotated_image"]:
         print(f"Image annotee: {prediction['annotated_image']}")
